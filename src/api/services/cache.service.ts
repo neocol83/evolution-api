@@ -7,9 +7,9 @@ export class CacheService {
 
   constructor(private readonly cache: ICache) {
     if (cache) {
-      this.logger.info(`cacheservice created using cache engine: ${cache.constructor?.name}`);
+      this.logger.verbose(`cacheservice created using cache engine: ${cache.constructor?.name}`);
     } else {
-      this.logger.info(`cacheservice disabled`);
+      this.logger.verbose(`cacheservice disabled`);
     }
   }
 
@@ -21,6 +21,9 @@ export class CacheService {
   }
 
   public async hGet(key: string, field: string) {
+    if (!this.cache) {
+      return null;
+    }
     try {
       const data = await this.cache.hGet(key, field);
 
@@ -43,6 +46,9 @@ export class CacheService {
   }
 
   public async hSet(key: string, field: string, value: any) {
+    if (!this.cache) {
+      return;
+    }
     try {
       const json = JSON.stringify(value, BufferJSON.replacer);
 
@@ -67,6 +73,9 @@ export class CacheService {
   }
 
   async hDelete(key: string, field: string) {
+    if (!this.cache) {
+      return false;
+    }
     try {
       await this.cache.hDelete(key, field);
       return true;
