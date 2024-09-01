@@ -2,7 +2,7 @@
 
 ### Features
 
-* Define a global proxy to be used if the instance does not have one.
+* Define a global proxy to be used if the instance does not have one
 
 ### Fixed
 
