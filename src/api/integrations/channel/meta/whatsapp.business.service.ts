@@ -321,7 +321,7 @@ export class BusinessStartupService extends ChannelStartupService {
             try {
               const message: any = received;
 
-              const id = message[message.type].id;
+              const id = message.messages[0][message.messages[0].type].id;
               let urlServer = this.configService.get<WaBusiness>('WA_BUSINESS').URL;
               const version = this.configService.get<WaBusiness>('WA_BUSINESS').VERSION;
               urlServer = `${urlServer}/${version}/${id}`;
@@ -386,7 +386,7 @@ export class BusinessStartupService extends ChannelStartupService {
               ...this.messageInteractiveJson(received),
             },
             contextInfo: this.messageInteractiveJson(received)?.contextInfo,
-            messageType: 'conversation',
+            messageType: 'interactiveMessage',
             messageTimestamp: parseInt(received.messages[0].timestamp) as number,
             source: 'unknown',
             instanceId: this.instanceId,
@@ -399,7 +399,7 @@ export class BusinessStartupService extends ChannelStartupService {
               ...this.messageButtonJson(received),
             },
             contextInfo: this.messageButtonJson(received)?.contextInfo,
-            messageType: 'conversation',
+            messageType: 'buttonMessage',
             messageTimestamp: parseInt(received.messages[0].timestamp) as number,
             source: 'unknown',
             instanceId: this.instanceId,
@@ -425,7 +425,7 @@ export class BusinessStartupService extends ChannelStartupService {
               ...this.messageContactsJson(received),
             },
             contextInfo: this.messageContactsJson(received)?.contextInfo,
-            messageType: 'conversation',
+            messageType: 'contactMessage',
             messageTimestamp: parseInt(received.messages[0].timestamp) as number,
             source: 'unknown',
             instanceId: this.instanceId,

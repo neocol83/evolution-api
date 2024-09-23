@@ -1,4 +1,4 @@
-import { Options, SendAudioDto, SendMediaDto, SendTextDto } from '@api/dto/sendMessage.dto';
+import { MediaMessage, Options, SendAudioDto, SendMediaDto, SendTextDto } from '@api/dto/sendMessage.dto';
 import { ProviderFiles } from '@api/provider/sessions';
 import { PrismaRepository } from '@api/repository/repository.service';
 import { chatbotController } from '@api/server.module';
@@ -7,7 +7,10 @@ import { ChannelStartupService } from '@api/services/channel.service';
 import { Events, wa } from '@api/types/wa.types';
 import { Chatwoot, ConfigService, Openai } from '@config/env.config';
 import { BadRequestException, InternalServerErrorException } from '@exceptions';
+import { isURL } from 'class-validator';
 import EventEmitter2 from 'eventemitter2';
+import mime from 'mime';
+import { v4 } from 'uuid';
 
 export class EvolutionStartupService extends ChannelStartupService {
   constructor(
@@ -92,7 +95,7 @@ export class EvolutionStartupService extends ChannelStartupService {
 
       if (received.message) {
         const key = {
-          id: received.key.id,
+          id: received.key.id || v4(),
           remoteJid: received.key.remoteJid,
           fromMe: received.key.fromMe,
         };
@@ -159,53 +162,88 @@ export class EvolutionStartupService extends ChannelStartupService {
           data: messageRaw,
         });
 
-        const contact = await this.prismaRepository.contact.findFirst({
-          where: { instanceId: this.instanceId, remoteJid: key.remoteJid },
-        });
-
-        const contactRaw: any = {
+        await this.updateContact({
           remoteJid: messageRaw.key.remoteJid,
-          pushName: received.pushName,
-          instanceId: this.instanceId,
-        };
-
-        if (contactRaw.remoteJid === 'status@broadcast') {
-          return;
-        }
-
-        if (contact) {
-          const contactRaw: any = {
-            remoteJid: messageRaw.key.remoteJid,
-            pushName: received.pushName,
-            instanceId: this.instanceId,
-          };
-
-          this.sendDataWebhook(Events.CONTACTS_UPDATE, contactRaw);
-
-          if (this.configService.get<Chatwoot>('CHATWOOT').ENABLED && this.localChatwoot?.enabled) {
-            await this.chatwootService.eventWhatsapp(
-              Events.CONTACTS_UPDATE,
-              { instanceName: this.instance.name, instanceId: this.instanceId },
-              contactRaw,
-            );
-          }
-
-          await this.prismaRepository.contact.updateMany({
-            where: { remoteJid: contact.remoteJid },
-            data: contactRaw,
-          });
-          return;
-        }
-
-        this.sendDataWebhook(Events.CONTACTS_UPSERT, contactRaw);
-
-        this.prismaRepository.contact.create({
-          data: contactRaw,
+          pushName: messageRaw.pushName,
+          profilePicUrl: received.profilePicUrl,
         });
       }
     } catch (error) {
       this.logger.error(error);
     }
+  }
+
+  private async updateContact(data: { remoteJid: string; pushName?: string; profilePicUrl?: string }) {
+    const contact = await this.prismaRepository.contact.findFirst({
+      where: { instanceId: this.instanceId, remoteJid: data.remoteJid },
+    });
+
+    if (contact) {
+      const contactRaw: any = {
+        remoteJid: data.remoteJid,
+        pushName: data?.pushName,
+        instanceId: this.instanceId,
+        profilePicUrl: data?.profilePicUrl,
+      };
+
+      this.sendDataWebhook(Events.CONTACTS_UPDATE, contactRaw);
+
+      if (this.configService.get<Chatwoot>('CHATWOOT').ENABLED && this.localChatwoot?.enabled) {
+        await this.chatwootService.eventWhatsapp(
+          Events.CONTACTS_UPDATE,
+          { instanceName: this.instance.name, instanceId: this.instanceId },
+          contactRaw,
+        );
+      }
+
+      await this.prismaRepository.contact.updateMany({
+        where: { remoteJid: contact.remoteJid, instanceId: this.instanceId },
+        data: contactRaw,
+      });
+      return;
+    }
+
+    const contactRaw: any = {
+      remoteJid: data.remoteJid,
+      pushName: data?.pushName,
+      instanceId: this.instanceId,
+      profilePicUrl: data?.profilePicUrl,
+    };
+
+    this.sendDataWebhook(Events.CONTACTS_UPSERT, contactRaw);
+
+    await this.prismaRepository.contact.create({
+      data: contactRaw,
+    });
+
+    const chat = await this.prismaRepository.chat.findFirst({
+      where: { instanceId: this.instanceId, remoteJid: data.remoteJid },
+    });
+
+    if (chat) {
+      const chatRaw: any = {
+        remoteJid: data.remoteJid,
+        instanceId: this.instanceId,
+      };
+
+      this.sendDataWebhook(Events.CHATS_UPDATE, chatRaw);
+
+      await this.prismaRepository.chat.updateMany({
+        where: { remoteJid: chat.remoteJid },
+        data: chatRaw,
+      });
+    }
+
+    const chatRaw: any = {
+      remoteJid: data.remoteJid,
+      instanceId: this.instanceId,
+    };
+
+    this.sendDataWebhook(Events.CHATS_UPSERT, chatRaw);
+
+    await this.prismaRepository.chat.create({
+      data: chatRaw,
+    });
   }
 
   protected async sendMessageWithTyping(number: string, message: any, options?: Options, isIntegration = false) {
@@ -225,22 +263,84 @@ export class EvolutionStartupService extends ChannelStartupService {
         quoted = msg;
       }
 
+      if (options.delay) {
+        await new Promise((resolve) => setTimeout(resolve, options.delay));
+      }
+
       if (options?.webhookUrl) {
         webhookUrl = options.webhookUrl;
       }
 
-      const messageRaw: any = {
-        key: { fromMe: true, id: 'ID', remoteJid: this.createJid(number) },
-        message: {
-          ...message,
-          quoted,
-        },
-        messageType: 'conversation',
-        messageTimestamp: Math.round(new Date().getTime() / 1000),
-        webhookUrl,
-        source: 'unknown',
-        instanceId: this.instanceId,
-      };
+      const messageId = v4();
+
+      let messageRaw: any;
+
+      if (message?.mediaType === 'image') {
+        messageRaw = {
+          key: { fromMe: true, id: messageId, remoteJid: number },
+          message: {
+            mediaUrl: message.media,
+            quoted,
+          },
+          messageType: 'imageMessage',
+          messageTimestamp: Math.round(new Date().getTime() / 1000),
+          webhookUrl,
+          source: 'unknown',
+          instanceId: this.instanceId,
+        };
+      } else if (message?.mediaType === 'video') {
+        messageRaw = {
+          key: { fromMe: true, id: messageId, remoteJid: number },
+          message: {
+            mediaUrl: message.media,
+            quoted,
+          },
+          messageType: 'videoMessage',
+          messageTimestamp: Math.round(new Date().getTime() / 1000),
+          webhookUrl,
+          source: 'unknown',
+          instanceId: this.instanceId,
+        };
+      } else if (message?.mediaType === 'audio') {
+        messageRaw = {
+          key: { fromMe: true, id: messageId, remoteJid: number },
+          message: {
+            mediaUrl: message.media,
+            quoted,
+          },
+          messageType: 'audioMessage',
+          messageTimestamp: Math.round(new Date().getTime() / 1000),
+          webhookUrl,
+          source: 'unknown',
+          instanceId: this.instanceId,
+        };
+      } else if (message?.mediaType === 'document') {
+        messageRaw = {
+          key: { fromMe: true, id: messageId, remoteJid: number },
+          message: {
+            mediaUrl: message.media,
+            quoted,
+          },
+          messageType: 'documentMessage',
+          messageTimestamp: Math.round(new Date().getTime() / 1000),
+          webhookUrl,
+          source: 'unknown',
+          instanceId: this.instanceId,
+        };
+      } else {
+        messageRaw = {
+          key: { fromMe: true, id: messageId, remoteJid: number },
+          message: {
+            ...message,
+            quoted,
+          },
+          messageType: 'conversation',
+          messageTimestamp: Math.round(new Date().getTime() / 1000),
+          webhookUrl,
+          source: 'unknown',
+          instanceId: this.instanceId,
+        };
+      }
 
       this.logger.log(messageRaw);
 
@@ -292,9 +392,51 @@ export class EvolutionStartupService extends ChannelStartupService {
     return res;
   }
 
-  public async mediaMessage(data: SendMediaDto, isIntegration = false) {
-    const message = data;
+  protected async prepareMediaMessage(mediaMessage: MediaMessage) {
+    try {
+      if (mediaMessage.mediatype === 'document' && !mediaMessage.fileName) {
+        const regex = new RegExp(/.*\/(.+?)\./);
+        const arrayMatch = regex.exec(mediaMessage.media);
+        mediaMessage.fileName = arrayMatch[1];
+      }
 
+      if (mediaMessage.mediatype === 'image' && !mediaMessage.fileName) {
+        mediaMessage.fileName = 'image.png';
+      }
+
+      if (mediaMessage.mediatype === 'video' && !mediaMessage.fileName) {
+        mediaMessage.fileName = 'video.mp4';
+      }
+
+      let mimetype: string;
+
+      const prepareMedia: any = {
+        caption: mediaMessage?.caption,
+        fileName: mediaMessage.fileName,
+        mediaType: mediaMessage.mediatype,
+        media: mediaMessage.media,
+        gifPlayback: false,
+      };
+
+      if (isURL(mediaMessage.media)) {
+        mimetype = mime.getType(mediaMessage.media);
+      } else {
+        mimetype = mime.getType(mediaMessage.fileName);
+      }
+
+      prepareMedia.mimetype = mimetype;
+
+      return prepareMedia;
+    } catch (error) {
+      this.logger.error(error);
+      throw new InternalServerErrorException(error?.toString() || error);
+    }
+  }
+
+  public async mediaMessage(data: SendMediaDto, isIntegration = false) {
+    const message = await this.prepareMediaMessage(data);
+
+    console.log('message', message);
     return await this.sendMessageWithTyping(
       data.number,
       { ...message },
@@ -310,8 +452,31 @@ export class EvolutionStartupService extends ChannelStartupService {
     );
   }
 
+  public async processAudio(audio: string, number: string) {
+    number = number.replace(/\D/g, '');
+    const hash = `${number}-${new Date().getTime()}`;
+
+    let mimetype: string;
+
+    const prepareMedia: any = {
+      fileName: `${hash}.mp4`,
+      mediaType: 'audio',
+      media: audio,
+    };
+
+    if (isURL(audio)) {
+      mimetype = mime.getType(audio);
+    } else {
+      mimetype = mime.getType(prepareMedia.fileName);
+    }
+
+    prepareMedia.mimetype = mimetype;
+
+    return prepareMedia;
+  }
+
   public async audioWhatsapp(data: SendAudioDto, isIntegration = false) {
-    const message = data;
+    const message = await this.processAudio(data.audio, data.number);
 
     return await this.sendMessageWithTyping(
       data.number,

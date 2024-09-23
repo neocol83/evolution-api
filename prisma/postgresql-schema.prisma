@@ -180,6 +180,7 @@ model MessageUpdate {
 model Webhook {
   id              String    @id @default(cuid())
   url             String    @db.VarChar(500)
+  headers         Json?     @db.JsonB
   enabled         Boolean?  @default(true) @db.Boolean
   events          Json?     @db.JsonB
   webhookByEvents Boolean?  @default(false) @db.Boolean
@@ -573,4 +574,12 @@ model FlowiseSetting {
   flowiseIdFallback String?   @db.VarChar(100)
   Instance          Instance  @relation(fields: [instanceId], references: [id], onDelete: Cascade)
   instanceId        String    @unique
+}
+
+model IsOnWhatsapp {
+  id         String   @id @default(cuid())
+  remoteJid  String   @unique @db.VarChar(100)
+  jidOptions String
+  createdAt  DateTime @default(now()) @db.Timestamp
+  updatedAt  DateTime @updatedAt @db.Timestamp
 }

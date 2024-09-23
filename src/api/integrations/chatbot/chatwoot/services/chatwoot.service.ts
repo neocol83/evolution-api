@@ -306,10 +306,13 @@ export class ChatwootService {
       data = {
         inbox_id: inboxId,
         name: name || phoneNumber,
-        phone_number: `+${phoneNumber}`,
         identifier: jid,
         avatar_url: avatar_url,
       };
+
+      if ((jid && jid.includes('@')) || !jid) {
+        data['phone_number'] = `+${phoneNumber}`;
+      }
     } else {
       data = {
         inbox_id: inboxId,
@@ -366,6 +369,10 @@ export class ChatwootService {
 
   public async addLabelToContact(nameInbox: string, contactId: number) {
     try {
+      const uri = this.configService.get<Chatwoot>('CHATWOOT').IMPORT.DATABASE.CONNECTION.URI;
+
+      if (!uri) return false;
+
       const sqlTags = `SELECT id FROM tags WHERE name = '${nameInbox}' LIMIT 1`;
 
       const tagData = (await this.pgClient.query(sqlTags))?.rows[0];
@@ -632,7 +639,7 @@ export class ChatwootService {
           }
         }
       } else {
-        const jid = isGroup ? null : body.key.remoteJid;
+        const jid = body.key.remoteJid;
         contact = await this.createContact(
           instance,
           chatId,
@@ -1136,7 +1143,7 @@ export class ChatwootService {
       }
 
       const chatId =
-        body.conversation.meta.sender?.phone_number?.replace('+', '') || body.conversation.meta.sender?.identifier;
+        body.conversation.meta.sender?.identifier || body.conversation.meta.sender?.phone_number.replace('+', '');
       // Chatwoot to Whatsapp
       const messageReceived = body.content
         ? body.content
@@ -1475,7 +1482,7 @@ export class ChatwootService {
     let inReplyToExternalId = null;
 
     if (msg) {
-      inReplyToExternalId = msg.message?.extendedTextMessage?.contextInfo?.stanzaId;
+      inReplyToExternalId = msg.message?.extendedTextMessage?.contextInfo?.stanzaId ?? msg.contextInfo?.stanzaId;
       if (inReplyToExternalId) {
         const message = await this.getMessageByKeyId(instance, inReplyToExternalId);
         if (message?.chatwootMessageId) {
@@ -1525,6 +1532,7 @@ export class ChatwootService {
       'audioMessage',
       'videoMessage',
       'stickerMessage',
+      'viewOnceMessageV2'
     ];
 
     const messageKeys = Object.keys(message);
@@ -1578,6 +1586,8 @@ export class ChatwootService {
       liveLocationMessage: msg.liveLocationMessage,
       listMessage: msg.listMessage,
       listResponseMessage: msg.listResponseMessage,
+      viewOnceMessageV2: msg?.message?.viewOnceMessageV2?.message?.imageMessage?.url || msg?.message?.viewOnceMessageV2?.message?.videoMessage?.url || msg?.message?.viewOnceMessageV2?.message?.audioMessage?.url,
+
     };
 
     return types;
@@ -1819,14 +1829,12 @@ export class ChatwootService {
           return;
         }
 
-        // fix when receiving/sending messages from whatsapp desktop with ephemeral messages enabled
         if (body.message?.ephemeralMessage?.message) {
           body.message = {
             ...body.message?.ephemeralMessage?.message,
           };
         }
 
-        // Whatsapp to Chatwoot
         const originalMessage = await this.getConversationMessage(body.message);
         const bodyMessage = originalMessage
           ? originalMessage
