@@ -113,6 +113,7 @@ import makeWASocket, {
 } from 'baileys';
 import { Label } from 'baileys/lib/Types/Label';
 import { LabelAssociation } from 'baileys/lib/Types/LabelAssociation';
+import { spawn } from 'child_process';
 import { isBase64, isURL } from 'class-validator';
 import { randomBytes } from 'crypto';
 import EventEmitter2 from 'eventemitter2';
@@ -1195,10 +1196,13 @@ export class BaileysStartupService extends ChannelStartupService {
               );
             }
 
-            this.prismaRepository.contact.updateMany({
-              where: { remoteJid: received.key.remoteJid, instanceId: this.instanceId },
-              data: contactRaw,
-            });
+            if (this.configService.get<Database>('DATABASE').SAVE_DATA.CONTACTS)
+              await this.prismaRepository.contact.upsert({
+                where: { remoteJid_instanceId: { remoteJid: contactRaw.remoteJid, instanceId: contactRaw.instanceId } },
+                create: contactRaw,
+                update: contactRaw,
+              });
+
             return;
           }
 
@@ -1676,6 +1680,8 @@ export class BaileysStartupService extends ChannelStartupService {
     ephemeralExpiration?: number,
     // participants?: GroupParticipant[],
   ) {
+    sender = sender.toLowerCase();
+
     const option: any = {
       quoted,
     };
@@ -1741,9 +1747,25 @@ export class BaileysStartupService extends ChannelStartupService {
     }
 
     if (sender === 'status@broadcast') {
-      const jidList = message['status'].option.statusJidList;
+      let jidList;
+      if (message['status'].option.allContacts) {
+        const contacts = await this.prismaRepository.contact.findMany({
+          where: {
+            instanceId: this.instanceId,
+            remoteJid: {
+              not: {
+                endsWith: '@g.us',
+              },
+            },
+          },
+        });
 
-      const batchSize = 500;
+        jidList = contacts.map((contact) => contact.remoteJid);
+      } else {
+        jidList = message['status'].option.statusJidList;
+      }
+
+      const batchSize = 10;
 
       const batches = Array.from({ length: Math.ceil(jidList.length / batchSize) }, (_, i) =>
         jidList.slice(i * batchSize, i * batchSize + batchSize),
@@ -1821,7 +1843,7 @@ export class BaileysStartupService extends ChannelStartupService {
       throw new BadRequestException(isWA);
     }
 
-    const sender = isWA.jid;
+    const sender = isWA.jid.toLowerCase();
 
     this.logger.verbose(`Sending message to ${sender}`);
 
@@ -1892,7 +1914,7 @@ export class BaileysStartupService extends ChannelStartupService {
           throw new NotFoundException('Group not found');
         }
 
-        if (options.mentionsEveryOne) {
+        if (options?.mentionsEveryOne) {
           mentions = group.participants.map((participant) => participant.id);
         } else if (options.mentioned?.length) {
           mentions = options.mentioned.map((mention) => {
@@ -2249,12 +2271,18 @@ export class BaileysStartupService extends ChannelStartupService {
     throw new BadRequestException('Type not found');
   }
 
-  public async statusMessage(data: SendStatusDto) {
-    const status = await this.formatStatusMessage(data);
+  public async statusMessage(data: SendStatusDto, file?: any) {
+    const mediaData: SendStatusDto = { ...data };
 
-    return await this.sendMessageWithTyping('status@broadcast', {
+    if (file) mediaData.content = file.buffer.toString('base64');
+
+    const status = await this.formatStatusMessage(mediaData);
+
+    const statusSent = await this.sendMessageWithTyping('status@broadcast', {
       status,
     });
+
+    return statusSent;
   }
 
   private async prepareMediaMessage(mediaMessage: MediaMessage) {
@@ -2378,7 +2406,11 @@ export class BaileysStartupService extends ChannelStartupService {
     }
   }
 
-  public async mediaSticker(data: SendStickerDto) {
+  public async mediaSticker(data: SendStickerDto, file?: any) {
+    const mediaData: SendStickerDto = { ...data };
+
+    if (file) mediaData.sticker = file.buffer.toString('base64');
+
     const convert = await this.convertToWebP(data.sticker);
     const gifPlayback = data.sticker.includes('.gif');
     const result = await this.sendMessageWithTyping(
@@ -2399,10 +2431,14 @@ export class BaileysStartupService extends ChannelStartupService {
     return result;
   }
 
-  public async mediaMessage(data: SendMediaDto, isIntegration = false) {
-    const generate = await this.prepareMediaMessage(data);
+  public async mediaMessage(data: SendMediaDto, file?: any, isIntegration = false) {
+    const mediaData: SendMediaDto = { ...data };
 
-    return await this.sendMessageWithTyping(
+    if (file) mediaData.media = file.buffer.toString('base64');
+
+    const generate = await this.prepareMediaMessage(mediaData);
+
+    const mediaSent = await this.sendMessageWithTyping(
       data.number,
       { ...generate.message },
       {
@@ -2414,56 +2450,74 @@ export class BaileysStartupService extends ChannelStartupService {
       },
       isIntegration,
     );
+
+    return mediaSent;
   }
 
   public async processAudioMp4(audio: string) {
-    let inputAudioStream: PassThrough;
+    let inputStream: PassThrough;
 
     if (isURL(audio)) {
-      const timestamp = new Date().getTime();
-      const url = `${audio}?timestamp=${timestamp}`;
-
-      const config: any = {
-        responseType: 'stream',
-      };
-
-      const response = await axios.get(url, config);
-      inputAudioStream = response.data.pipe(new PassThrough());
+      const response = await axios.get(audio, { responseType: 'stream' });
+      inputStream = response.data;
     } else {
       const audioBuffer = Buffer.from(audio, 'base64');
-      inputAudioStream = new PassThrough();
-      inputAudioStream.end(audioBuffer);
+      inputStream = new PassThrough();
+      inputStream.end(audioBuffer);
     }
 
-    return new Promise((resolve, reject) => {
-      const outputAudioStream = new PassThrough();
-      const chunks: Buffer[] = [];
+    return new Promise<Buffer>((resolve, reject) => {
+      const ffmpegProcess = spawn(ffmpegPath.path, [
+        '-i',
+        'pipe:0',
+        '-vn',
+        '-ab',
+        '128k',
+        '-ar',
+        '44100',
+        '-f',
+        'mp4',
+        '-movflags',
+        'frag_keyframe+empty_moov',
+        'pipe:1',
+      ]);
 
-      outputAudioStream.on('data', (chunk) => chunks.push(chunk));
-      outputAudioStream.on('end', () => {
-        const outputBuffer = Buffer.concat(chunks);
-        resolve(outputBuffer);
+      const outputChunks: Buffer[] = [];
+      let stderrData = '';
+
+      ffmpegProcess.stdout.on('data', (chunk) => {
+        outputChunks.push(chunk);
       });
 
-      outputAudioStream.on('error', (error) => {
-        console.log('error', error);
+      ffmpegProcess.stderr.on('data', (data) => {
+        stderrData += data.toString();
+        this.logger.verbose(`ffmpeg stderr: ${data}`);
+      });
+
+      ffmpegProcess.on('error', (error) => {
+        console.error('Error in ffmpeg process', error);
         reject(error);
       });
 
-      ffmpeg.setFfmpegPath(ffmpegPath.path);
+      ffmpegProcess.on('close', (code) => {
+        if (code === 0) {
+          this.logger.verbose('Audio converted to mp4');
+          const outputBuffer = Buffer.concat(outputChunks);
+          resolve(outputBuffer);
+        } else {
+          this.logger.error(`ffmpeg exited with code ${code}`);
+          this.logger.error(`ffmpeg stderr: ${stderrData}`);
+          reject(new Error(`ffmpeg exited with code ${code}: ${stderrData}`));
+        }
+      });
 
-      ffmpeg(inputAudioStream)
-        .outputFormat('mp4')
-        .noVideo()
-        .audioCodec('aac')
-        .audioBitrate('128k')
-        .audioFrequency(44100)
-        .addOutputOptions('-f ipod')
-        .pipe(outputAudioStream, { end: true })
-        .on('error', function (error) {
-          console.log('error', error);
-          reject(error);
-        });
+      inputStream.pipe(ffmpegProcess.stdin);
+
+      inputStream.on('error', (err) => {
+        console.error('Error in inputStream', err);
+        ffmpegProcess.stdin.end();
+        reject(err);
+      });
     });
   }
 
@@ -2517,13 +2571,17 @@ export class BaileysStartupService extends ChannelStartupService {
     });
   }
 
-  public async audioWhatsapp(data: SendAudioDto, isIntegration = false) {
+  public async audioWhatsapp(data: SendAudioDto, file?: any, isIntegration = false) {
+    const mediaData: SendAudioDto = { ...data };
+
+    if (file) mediaData.audio = file.buffer.toString('base64');
+
     if (!data?.encoding && data?.encoding !== false) {
       data.encoding = true;
     }
 
     if (data?.encoding) {
-      const convert = await this.processAudio(data.audio);
+      const convert = await this.processAudio(mediaData.audio);
 
       if (Buffer.isBuffer(convert)) {
         const result = this.sendMessageWithTyping<AnyMessageContent>(
@@ -2954,28 +3012,33 @@ export class BaileysStartupService extends ChannelStartupService {
       const typeMessage = getContentType(msg.message);
 
       const ext = mime.getExtension(mediaMessage?.['mimetype']);
-
       const fileName = mediaMessage?.['fileName'] || `${msg.key.id}.${ext}` || `${v4()}.${ext}`;
 
       if (convertToMp4 && typeMessage === 'audioMessage') {
-        const convert = await this.processAudioMp4(buffer.toString('base64'));
+        try {
+          const convert = await this.processAudioMp4(buffer.toString('base64'));
 
-        if (Buffer.isBuffer(convert)) {
-          const result = {
-            mediaType,
-            fileName,
-            caption: mediaMessage['caption'],
-            size: {
-              fileLength: mediaMessage['fileLength'],
-              height: mediaMessage['height'],
-              width: mediaMessage['width'],
-            },
-            mimetype: 'audio/mp4',
-            base64: convert,
-            buffer: getBuffer ? convert : null,
-          };
+          if (Buffer.isBuffer(convert)) {
+            const result = {
+              mediaType,
+              fileName,
+              caption: mediaMessage['caption'],
+              size: {
+                fileLength: mediaMessage['fileLength'],
+                height: mediaMessage['height'],
+                width: mediaMessage['width'],
+              },
+              mimetype: 'audio/mp4',
+              base64: convert.toString('base64'),
+              buffer: getBuffer ? convert : null,
+            };
 
-          return result;
+            return result;
+          }
+        } catch (error) {
+          this.logger.error('Error converting audio to mp4:');
+          this.logger.error(error);
+          throw new BadRequestException('Failed to convert audio to MP4');
         }
       }
 
@@ -2993,6 +3056,7 @@ export class BaileysStartupService extends ChannelStartupService {
         buffer: getBuffer ? buffer : null,
       };
     } catch (error) {
+      this.logger.error('Error processing media message:');
       this.logger.error(error);
       throw new BadRequestException(error.toString());
     }
@@ -3271,10 +3335,10 @@ export class BaileysStartupService extends ChannelStartupService {
     }
   }
 
-  private async getGroupMetadataCache(groupJid: string) {
+  private getGroupMetadataCache = async (groupJid: string) => {
     if (!isJidGroup(groupJid)) return null;
 
-    const cacheConf = configService.get<CacheConf>('CACHE');
+    const cacheConf = this.configService.get<CacheConf>('CACHE');
 
     if ((cacheConf?.REDIS?.ENABLED && cacheConf?.REDIS?.URI !== '') || cacheConf?.LOCAL?.ENABLED) {
       if (await groupMetadataCache?.has(groupJid)) {
@@ -3293,7 +3357,7 @@ export class BaileysStartupService extends ChannelStartupService {
     }
 
     return await this.findGroup({ groupJid }, 'inner');
-  }
+  };
 
   public async createGroup(create: CreateGroupDto) {
     try {

@@ -374,23 +374,30 @@ export class ChatwootService {
 
       if (!uri) return false;
 
-      const sqlTags = `SELECT id FROM tags WHERE name = '${nameInbox}' LIMIT 1`;
-
-      const tagData = (await this.pgClient.query(sqlTags))?.rows[0];
+      const sqlTags = `SELECT id, taggings_count FROM tags WHERE name = $1 LIMIT 1`;
+      const tagData = (await this.pgClient.query(sqlTags, [nameInbox]))?.rows[0];
       let tagId = tagData?.id;
       const taggingsCount = tagData?.taggings_count || 0;
 
-      const sqlTag = `INSERT INTO tags (name, taggings_count) VALUES ('${nameInbox}', ${
-        taggingsCount + 1
-      }) ON CONFLICT (name) DO UPDATE SET taggings_count = ${taggingsCount + 1} RETURNING id`;
+      const sqlTag = `INSERT INTO tags (name, taggings_count) 
+                      VALUES ($1, $2) 
+                      ON CONFLICT (name) 
+                      DO UPDATE SET taggings_count = tags.taggings_count + 1 
+                      RETURNING id`;
 
-      tagId = (await this.pgClient.query(sqlTag))?.rows[0]?.id;
+      tagId = (await this.pgClient.query(sqlTag, [nameInbox, taggingsCount + 1]))?.rows[0]?.id;
 
-      await this.pgClient.query(sqlTag);
+      const sqlCheckTagging = `SELECT 1 FROM taggings 
+                               WHERE tag_id = $1 AND taggable_type = 'Contact' AND taggable_id = $2 AND context = 'labels' LIMIT 1`;
 
-      const sqlInsertLabel = `INSERT INTO taggings (tag_id, taggable_type, taggable_id, context, created_at) VALUES (${tagId}, 'Contact', ${contactId}, 'labels', NOW())`;
+      const taggingExists = (await this.pgClient.query(sqlCheckTagging, [tagId, contactId]))?.rowCount > 0;
 
-      await this.pgClient.query(sqlInsertLabel);
+      if (!taggingExists) {
+        const sqlInsertLabel = `INSERT INTO taggings (tag_id, taggable_type, taggable_id, context, created_at) 
+                                VALUES ($1, 'Contact', $2, 'labels', NOW())`;
+
+        await this.pgClient.query(sqlInsertLabel, [tagId, contactId]);
+      }
 
       return true;
     } catch (error) {
@@ -538,26 +545,36 @@ export class ChatwootService {
 
   public async createConversation(instance: InstanceDto, body: any) {
     try {
+      this.logger.verbose('--- Start createConversation ---');
+      this.logger.verbose(`Instance: ${JSON.stringify(instance)}`);
+
       const client = await this.clientCw(instance);
 
       if (!client) {
-        this.logger.warn('client not found');
+        this.logger.warn(`Client not found for instance: ${JSON.stringify(instance)}`);
         return null;
       }
 
       const cacheKey = `${instance.instanceName}:createConversation-${body.key.remoteJid}`;
+      this.logger.verbose(`Cache key: ${cacheKey}`);
+
       if (await this.cache.has(cacheKey)) {
+        this.logger.verbose(`Cache hit for key: ${cacheKey}`);
         const conversationId = (await this.cache.get(cacheKey)) as number;
+        this.logger.verbose(`Cached conversation ID: ${conversationId}`);
         let conversationExists: conversation | boolean;
         try {
           conversationExists = await client.conversations.get({
             accountId: this.provider.accountId,
             conversationId: conversationId,
           });
+          this.logger.verbose(`Conversation exists: ${JSON.stringify(conversationExists)}`);
         } catch (error) {
+          this.logger.error(`Error getting conversation: ${error}`);
           conversationExists = false;
         }
         if (!conversationExists) {
+          this.logger.verbose('Conversation does not exist, re-calling createConversation');
           this.cache.delete(cacheKey);
           return await this.createConversation(instance, body);
         }
@@ -566,30 +583,37 @@ export class ChatwootService {
       }
 
       const isGroup = body.key.remoteJid.includes('@g.us');
+      this.logger.verbose(`Is group: ${isGroup}`);
 
       const chatId = isGroup ? body.key.remoteJid : body.key.remoteJid.split('@')[0];
+      this.logger.verbose(`Chat ID: ${chatId}`);
 
       let nameContact: string;
 
       nameContact = !body.key.fromMe ? body.pushName : chatId;
+      this.logger.verbose(`Name contact: ${nameContact}`);
 
       const filterInbox = await this.getInbox(instance);
 
       if (!filterInbox) {
-        this.logger.warn('inbox not found');
+        this.logger.warn(`Inbox not found for instance: ${JSON.stringify(instance)}`);
         return null;
       }
 
       if (isGroup) {
+        this.logger.verbose('Processing group conversation');
         const group = await this.waMonitor.waInstances[instance.instanceName].client.groupMetadata(chatId);
+        this.logger.verbose(`Group metadata: ${JSON.stringify(group)}`);
 
         nameContact = `${group.subject} (GROUP)`;
 
         const picture_url = await this.waMonitor.waInstances[instance.instanceName].profilePicture(
           body.key.participant.split('@')[0],
         );
+        this.logger.verbose(`Participant profile picture URL: ${JSON.stringify(picture_url)}`);
 
         const findParticipant = await this.findContact(instance, body.key.participant.split('@')[0]);
+        this.logger.verbose(`Found participant: ${JSON.stringify(findParticipant)}`);
 
         if (findParticipant) {
           if (!findParticipant.name || findParticipant.name === chatId) {
@@ -612,8 +636,10 @@ export class ChatwootService {
       }
 
       const picture_url = await this.waMonitor.waInstances[instance.instanceName].profilePicture(chatId);
+      this.logger.verbose(`Contact profile picture URL: ${JSON.stringify(picture_url)}`);
 
       let contact = await this.findContact(instance, chatId);
+      this.logger.verbose(`Found contact: ${JSON.stringify(contact)}`);
 
       if (contact) {
         if (!body.key.fromMe) {
@@ -630,8 +656,10 @@ export class ChatwootService {
                 )
               : false);
 
-          const contactNeedsUpdate = pictureNeedsUpdate || nameNeedsUpdate;
-          if (contactNeedsUpdate) {
+          this.logger.verbose(`Picture needs update: ${pictureNeedsUpdate}`);
+          this.logger.verbose(`Name needs update: ${nameNeedsUpdate}`);
+
+          if (pictureNeedsUpdate || nameNeedsUpdate) {
             contact = await this.updateContact(instance, contact.id, {
               ...(nameNeedsUpdate && { name: nameContact }),
               ...(waProfilePictureFile === '' && { avatar: null }),
@@ -653,38 +681,50 @@ export class ChatwootService {
       }
 
       if (!contact) {
-        this.logger.warn('contact not found');
+        this.logger.warn('Contact not created or found');
         return null;
       }
 
       const contactId = contact?.payload?.id || contact?.payload?.contact?.id || contact?.id;
+      this.logger.verbose(`Contact ID: ${contactId}`);
 
       const contactConversations = (await client.contacts.listConversations({
         accountId: this.provider.accountId,
         id: contactId,
       })) as any;
+      this.logger.verbose(`Contact conversations: ${JSON.stringify(contactConversations)}`);
 
-      if (contactConversations?.payload?.length) {
+      if (!contactConversations || !contactConversations.payload) {
+        this.logger.error('No conversations found or payload is undefined');
+        return null;
+      }
+
+      if (contactConversations.payload.length) {
         let conversation: any;
         if (this.provider.reopenConversation) {
           conversation = contactConversations.payload.find((conversation) => conversation.inbox_id == filterInbox.id);
+          this.logger.verbose(`Found conversation in reopenConversation mode: ${JSON.stringify(conversation)}`);
 
           if (this.provider.conversationPending) {
-            await client.conversations.toggleStatus({
-              accountId: this.provider.accountId,
-              conversationId: conversation.id,
-              data: {
-                status: 'pending',
-              },
-            });
+            if (conversation) {
+              await client.conversations.toggleStatus({
+                accountId: this.provider.accountId,
+                conversationId: conversation.id,
+                data: {
+                  status: 'pending',
+                },
+              });
+            }
           }
         } else {
           conversation = contactConversations.payload.find(
             (conversation) => conversation.status !== 'resolved' && conversation.inbox_id == filterInbox.id,
           );
+          this.logger.verbose(`Found conversation: ${JSON.stringify(conversation)}`);
         }
 
         if (conversation) {
+          this.logger.verbose(`Returning existing conversation ID: ${conversation.id}`);
           this.cache.set(cacheKey, conversation.id);
           return conversation.id;
         }
@@ -705,14 +745,15 @@ export class ChatwootService {
       });
 
       if (!conversation) {
-        this.logger.warn('conversation not found');
+        this.logger.warn('Conversation not created or found');
         return null;
       }
 
+      this.logger.verbose(`New conversation created with ID: ${conversation.id}`);
       this.cache.set(cacheKey, conversation.id);
       return conversation.id;
     } catch (error) {
-      this.logger.error(error);
+      this.logger.error(`Error in createConversation: ${error}`);
     }
   }
 
@@ -1087,7 +1128,7 @@ export class ChatwootService {
         data.caption = caption;
       }
 
-      const messageSent = await waInstance?.mediaMessage(data, true);
+      const messageSent = await waInstance?.mediaMessage(data, null, true);
 
       return messageSent;
     } catch (error) {
@@ -1865,6 +1906,9 @@ export class ChatwootService {
               key: {
                 path: ['id'],
                 equals: quotedId,
+              },
+              chatwootMessageId: {
+                not: null,
               },
             },
           });

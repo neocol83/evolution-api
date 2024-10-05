@@ -1026,10 +1026,14 @@ export class BusinessStartupService extends ChannelStartupService {
     }
   }
 
-  public async mediaMessage(data: SendMediaDto, isIntegration = false) {
-    const message = await this.prepareMediaMessage(data);
+  public async mediaMessage(data: SendMediaDto, file?: any, isIntegration = false) {
+    const mediaData: SendMediaDto = { ...data };
 
-    return await this.sendMessageWithTyping(
+    if (file) mediaData.media = file.buffer.toString('base64');
+
+    const message = await this.prepareMediaMessage(mediaData);
+
+    const mediaSent = await this.sendMessageWithTyping(
       data.number,
       { ...message },
       {
@@ -1042,6 +1046,8 @@ export class BusinessStartupService extends ChannelStartupService {
       },
       isIntegration,
     );
+
+    return mediaSent;
   }
 
   public async processAudio(audio: string, number: string) {
@@ -1072,10 +1078,14 @@ export class BusinessStartupService extends ChannelStartupService {
     return prepareMedia;
   }
 
-  public async audioWhatsapp(data: SendAudioDto, isIntegration = false) {
-    const message = await this.processAudio(data.audio, data.number);
+  public async audioWhatsapp(data: SendAudioDto, file?: any, isIntegration = false) {
+    const mediaData: SendAudioDto = { ...data };
 
-    return await this.sendMessageWithTyping(
+    if (file) mediaData.audio = file.buffer.toString('base64');
+
+    const message = await this.processAudio(mediaData.audio, data.number);
+
+    const audioSent = await this.sendMessageWithTyping(
       data.number,
       { ...message },
       {
@@ -1088,6 +1098,8 @@ export class BusinessStartupService extends ChannelStartupService {
       },
       isIntegration,
     );
+
+    return audioSent;
   }
 
   public async buttonMessage(data: SendButtonDto) {
