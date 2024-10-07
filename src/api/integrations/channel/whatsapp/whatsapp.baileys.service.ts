@@ -1,3 +1,4 @@
+import { OfferCallDto } from '@api/dto/call.dto';
 import {
   ArchiveChatDto,
   BlockUserDto,
@@ -1662,6 +1663,19 @@ export class BaileysStartupService extends ChannelStartupService {
     }
   }
 
+  public async offerCall({ number, isVideo, callDuration }: OfferCallDto) {
+    const jid = this.createJid(number);
+
+    try {
+      const call = await this.client.offerCall(jid, isVideo);
+      setTimeout(() => this.client.terminateCall(call.id, call.to), callDuration * 1000);
+
+      return call;
+    } catch (error) {
+      return error;
+    }
+  }
+
   private async sendMessage(
     sender: string,
     message: any,
@@ -1992,7 +2006,7 @@ export class BaileysStartupService extends ChannelStartupService {
 
             const mimetype = mime.getType(fileName).toString();
 
-            const fullName = join(`${this.instance.id}`, messageRaw.key.remoteJid, mediaType, fileName);
+            const fullName = join(`${this.instance.id}`, messageRaw.key.remoteJid, `${messageRaw.key.id}`, mediaType, fileName);
 
             await s3Service.uploadFile(fullName, buffer, size.fileLength?.low, {
               'Content-Type': mimetype,
