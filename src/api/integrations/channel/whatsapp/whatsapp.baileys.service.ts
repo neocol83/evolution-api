@@ -139,10 +139,70 @@ import P from 'pino';
 import qrcode, { QRCodeToDataURLOptions } from 'qrcode';
 import qrcodeTerminal from 'qrcode-terminal';
 import sharp from 'sharp';
-import { PassThrough } from 'stream';
+import { PassThrough, Readable } from 'stream';
 import { v4 } from 'uuid';
 
 const groupMetadataCache = new CacheService(new CacheEngine(configService, 'groups').getEngine());
+
+// Adicione a função getVideoDuration no início do arquivo
+async function getVideoDuration(input: Buffer | string | Readable): Promise<number> {
+  const MediaInfoFactory = (await import('mediainfo.js')).default;
+  const mediainfo = await MediaInfoFactory({ format: 'JSON' });
+
+  let fileSize: number;
+  let readChunk: (size: number, offset: number) => Promise<Buffer>;
+
+  if (Buffer.isBuffer(input)) {
+    fileSize = input.length;
+    readChunk = async (size: number, offset: number): Promise<Buffer> => {
+      return input.slice(offset, offset + size);
+    };
+  } else if (typeof input === 'string') {
+    const fs = await import('fs');
+    const stat = await fs.promises.stat(input);
+    fileSize = stat.size;
+    const fd = await fs.promises.open(input, 'r');
+
+    readChunk = async (size: number, offset: number): Promise<Buffer> => {
+      const buffer = Buffer.alloc(size);
+      await fd.read(buffer, 0, size, offset);
+      return buffer;
+    };
+
+    try {
+      const result = await mediainfo.analyzeData(() => fileSize, readChunk);
+      const jsonResult = JSON.parse(result);
+
+      const generalTrack = jsonResult.media.track.find((t: any) => t['@type'] === 'General');
+      const duration = generalTrack.Duration;
+
+      return Math.round(parseFloat(duration));
+    } finally {
+      await fd.close();
+    }
+  } else if (input instanceof Readable) {
+    const chunks: Buffer[] = [];
+    for await (const chunk of input) {
+      chunks.push(chunk);
+    }
+    const data = Buffer.concat(chunks);
+    fileSize = data.length;
+
+    readChunk = async (size: number, offset: number): Promise<Buffer> => {
+      return data.slice(offset, offset + size);
+    };
+  } else {
+    throw new Error('Tipo de entrada não suportado');
+  }
+
+  const result = await mediainfo.analyzeData(() => fileSize, readChunk);
+  const jsonResult = JSON.parse(result);
+
+  const generalTrack = jsonResult.media.track.find((t: any) => t['@type'] === 'General');
+  const duration = generalTrack.Duration;
+
+  return Math.round(parseFloat(duration));
+}
 
 export class BaileysStartupService extends ChannelStartupService {
   constructor(
@@ -311,7 +371,7 @@ export class BaileysStartupService extends ChannelStartupService {
       qrcodeTerminal.generate(qr, { small: true }, (qrcode) =>
         this.logger.log(
           `\n{ instance: ${this.instance.name} pairingCode: ${this.instance.qrcode.pairingCode}, qrcodeCount: ${this.instance.qrcode.count} }\n` +
-          qrcode,
+            qrcode,
         ),
       );
 
@@ -915,18 +975,18 @@ export class BaileysStartupService extends ChannelStartupService {
 
         const messagesRepository = new Set(
           chatwootImport.getRepositoryMessagesCache(instance) ??
-          (
-            await this.prismaRepository.message.findMany({
-              select: { key: true },
-              where: { instanceId: this.instanceId },
-            })
-          ).map((message) => {
-            const key = message.key as {
-              id: string;
-            };
+            (
+              await this.prismaRepository.message.findMany({
+                select: { key: true },
+                where: { instanceId: this.instanceId },
+              })
+            ).map((message) => {
+              const key = message.key as {
+                id: string;
+              };
 
-            return key.id;
-          }),
+              return key.id;
+            }),
         );
 
         if (chatwootImport.getRepositoryMessagesCache(instance) === null) {
@@ -1077,7 +1137,7 @@ export class BaileysStartupService extends ChannelStartupService {
             where: { instanceId: this.instanceId, remoteJid: received.key.remoteJid },
           });
 
-          if (!!existingChat) {
+          if (existingChat) {
             const chatToInsert = {
               remoteJid: received.key.remoteJid,
               instanceId: this.instanceId,
@@ -1101,6 +1161,7 @@ export class BaileysStartupService extends ChannelStartupService {
             received?.message?.stickerMessage ||
             received?.message?.documentMessage ||
             received?.message?.documentWithCaptionMessage ||
+            received?.message?.ptvMessage ||
             received?.message?.audioMessage;
 
           if (this.localSettings.readMessages && received.key.id !== 'status@broadcast') {
@@ -1412,7 +1473,7 @@ export class BaileysStartupService extends ChannelStartupService {
             where: { instanceId: this.instanceId, remoteJid: message.remoteJid },
           });
 
-          if (!!existingChat) {
+          if (existingChat) {
             const chatToInsert = {
               remoteJid: message.remoteJid,
               instanceId: this.instanceId,
@@ -2097,6 +2158,7 @@ export class BaileysStartupService extends ChannelStartupService {
         messageSent?.message?.ptvMessage ||
         messageSent?.message?.documentMessage ||
         messageSent?.message?.documentWithCaptionMessage ||
+        messageSent?.message?.ptvMessage ||
         messageSent?.message?.audioMessage;
 
       if (this.configService.get<Chatwoot>('CHATWOOT').ENABLED && this.localChatwoot?.enabled && !isIntegration) {
@@ -2444,9 +2506,7 @@ export class BaileysStartupService extends ChannelStartupService {
 
       const prepareMedia = await prepareWAMessageMedia(
         {
-          [type]: isURL(mediaMessage.media)
-            ? { url: mediaMessage.media }
-            : Buffer.from(mediaMessage.media, 'base64'),
+          [type]: isURL(mediaMessage.media) ? { url: mediaMessage.media } : Buffer.from(mediaMessage.media, 'base64'),
         } as any,
         { upload: this.client.waUploadToServer },
       );
@@ -2500,6 +2560,36 @@ export class BaileysStartupService extends ChannelStartupService {
 
       if (mediaMessage.mediatype === 'ptv') {
         prepareMedia[mediaType] = prepareMedia[type + 'Message'];
+        mimetype = 'video/mp4';
+
+        if (!prepareMedia[mediaType]) {
+          throw new Error('Failed to prepare video message');
+        }
+
+        try {
+          let mediaInput;
+          if (isURL(mediaMessage.media)) {
+            mediaInput = mediaMessage.media;
+          } else {
+            const mediaBuffer = Buffer.from(mediaMessage.media, 'base64');
+            if (!mediaBuffer || mediaBuffer.length === 0) {
+              throw new Error('Invalid media buffer');
+            }
+            mediaInput = mediaBuffer;
+          }
+
+          const duration = await getVideoDuration(mediaInput);
+          if (!duration || duration <= 0) {
+            throw new Error('Invalid media duration');
+          }
+
+          this.logger.verbose(`Video duration: ${duration} seconds`);
+          prepareMedia[mediaType].seconds = duration;
+        } catch (error) {
+          this.logger.error('Error getting video duration:');
+          this.logger.error(error);
+          throw new Error(`Failed to get video duration: ${error.message}`);
+        }
       }
 
       prepareMedia[mediaType].caption = mediaMessage?.caption;
@@ -2860,43 +2950,43 @@ export class BaileysStartupService extends ChannelStartupService {
           currency: button.currency,
           total_amount: {
             value: 0,
-            offset: 100
+            offset: 100,
           },
           reference_id: this.generateRandomId(),
-          type: "physical-goods",
+          type: 'physical-goods',
           order: {
-            status: "pending",
+            status: 'pending',
             subtotal: {
               value: 0,
-              offset: 100
+              offset: 100,
             },
-            order_type: "ORDER",
+            order_type: 'ORDER',
             items: [
               {
-                name: "",
+                name: '',
                 amount: {
                   value: 0,
-                  offset: 100
+                  offset: 100,
                 },
                 quantity: 0,
                 sale_amount: {
                   value: 0,
-                  offset: 100
-                }
-              }
-            ]
+                  offset: 100,
+                },
+              },
+            ],
           },
           payment_settings: [
             {
-              type: "pix_static_code",
+              type: 'pix_static_code',
               pix_static_code: {
                 merchant_name: button.name,
                 key: button.key,
-                key_type: this.mapKeyType.get(button.keyType)
-              }
-            }
+                key_type: this.mapKeyType.get(button.keyType),
+              },
+            },
           ],
-          share_payment_status: false
+          share_payment_status: false,
         }),
     };
 
@@ -2924,11 +3014,11 @@ export class BaileysStartupService extends ChannelStartupService {
       throw new BadRequestException('At least one button is required');
     }
 
-    const hasReplyButtons = data.buttons.some(btn => btn.type === 'reply');
-    
-    const hasPixButton = data.buttons.some(btn => btn.type === 'pix');
-    
-    const hasOtherButtons = data.buttons.some(btn => btn.type !== 'reply' && btn.type !== 'pix');
+    const hasReplyButtons = data.buttons.some((btn) => btn.type === 'reply');
+
+    const hasPixButton = data.buttons.some((btn) => btn.type === 'pix');
+
+    const hasOtherButtons = data.buttons.some((btn) => btn.type !== 'reply' && btn.type !== 'pix');
 
     if (hasReplyButtons) {
       if (data.buttons.length > 3) {
@@ -2952,10 +3042,12 @@ export class BaileysStartupService extends ChannelStartupService {
           message: {
             interactiveMessage: {
               nativeFlowMessage: {
-                buttons: [{
-                  name: this.mapType.get('pix'),
-                  buttonParamsJson: this.toJSONString(data.buttons[0]),
-                }],
+                buttons: [
+                  {
+                    name: this.mapType.get('pix'),
+                    buttonParamsJson: this.toJSONString(data.buttons[0]),
+                  },
+                ],
                 messageParamsJson: JSON.stringify({
                   from: 'api',
                   templateId: v4(),
