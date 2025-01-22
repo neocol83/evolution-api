@@ -3,12 +3,15 @@
 ### Features
 
 * Retry system for send webhooks
-* Enhance message filtering to support timestamp range queries
+* Message filtering to support timestamp range queries
+* Chats filtering to support timestamp range queries
 
 ### Fixed
 
 * Correction of webhook global
 * Fixed send audio with whatsapp cloud api
+* Refactor on fetch chats
+* Refactor on Evolution Channel
 
 # 2.2.0 (2024-10-18 10:00)
 
