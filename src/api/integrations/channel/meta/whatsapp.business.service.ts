@@ -22,13 +22,14 @@ import { ChannelStartupService } from '@api/services/channel.service';
 import { Events, wa } from '@api/types/wa.types';
 import { Chatwoot, ConfigService, Database, Openai, S3, WaBusiness } from '@config/env.config';
 import { BadRequestException, InternalServerErrorException } from '@exceptions';
+import { createJid } from '@utils/createJid';
 import { status } from '@utils/renderStatus';
 import axios from 'axios';
 import { arrayUnique, isURL } from 'class-validator';
 import EventEmitter2 from 'eventemitter2';
 import FormData from 'form-data';
 import { createReadStream } from 'fs';
-import mime from 'mime';
+import mimeTypes from 'mime-types';
 import { join } from 'path';
 
 export class BusinessStartupService extends ChannelStartupService {
@@ -88,7 +89,7 @@ export class BusinessStartupService extends ChannelStartupService {
   }
 
   public async profilePicture(number: string) {
-    const jid = this.createJid(number);
+    const jid = createJid(number);
 
     return {
       wuid: jid,
@@ -132,9 +133,7 @@ export class BusinessStartupService extends ChannelStartupService {
 
       this.eventHandler(content);
 
-      this.phoneNumber = this.createJid(
-        content.messages ? content.messages[0].from : content.statuses[0]?.recipient_id,
-      );
+      this.phoneNumber = createJid(content.messages ? content.messages[0].from : content.statuses[0]?.recipient_id);
     } catch (error) {
       this.logger.error(error);
       throw new InternalServerErrorException(error?.toString());
@@ -231,7 +230,7 @@ export class BusinessStartupService extends ChannelStartupService {
       }
 
       if (!contact.phones[0]?.wa_id) {
-        contact.phones[0].wa_id = this.createJid(contact.phones[0].phone);
+        contact.phones[0].wa_id = createJid(contact.phones[0].phone);
       }
 
       result +=
@@ -915,7 +914,7 @@ export class BusinessStartupService extends ChannelStartupService {
       }
 
       const messageRaw: any = {
-        key: { fromMe: true, id: messageSent?.messages[0]?.id, remoteJid: this.createJid(number) },
+        key: { fromMe: true, id: messageSent?.messages[0]?.id, remoteJid: createJid(number) },
         message: this.convertMessageToRaw(message, content),
         messageType: this.renderMessageType(content.type),
         messageTimestamp: (messageSent?.messages[0]?.timestamp as number) || Math.round(new Date().getTime() / 1000),
@@ -1017,7 +1016,7 @@ export class BusinessStartupService extends ChannelStartupService {
         mediaMessage.fileName = 'video.mp4';
       }
 
-      let mimetype: string;
+      let mimetype: string | false;
 
       const prepareMedia: any = {
         caption: mediaMessage?.caption,
@@ -1028,11 +1027,11 @@ export class BusinessStartupService extends ChannelStartupService {
       };
 
       if (isURL(mediaMessage.media)) {
-        mimetype = mime.getType(mediaMessage.media);
+        mimetype = mimeTypes.lookup(mediaMessage.media);
         prepareMedia.id = mediaMessage.media;
         prepareMedia.type = 'link';
       } else {
-        mimetype = mime.getType(mediaMessage.fileName);
+        mimetype = mimeTypes.lookup(mediaMessage.fileName);
         const id = await this.getIdMedia(prepareMedia);
         prepareMedia.id = id;
         prepareMedia.type = 'id';
@@ -1075,7 +1074,7 @@ export class BusinessStartupService extends ChannelStartupService {
     number = number.replace(/\D/g, '');
     const hash = `${number}-${new Date().getTime()}`;
 
-    let mimetype: string;
+    let mimetype: string | false;
 
     const prepareMedia: any = {
       fileName: `${hash}.mp3`,
@@ -1084,11 +1083,11 @@ export class BusinessStartupService extends ChannelStartupService {
     };
 
     if (isURL(audio)) {
-      mimetype = mime.getType(audio);
+      mimetype = mimeTypes.lookup(audio);
       prepareMedia.id = audio;
       prepareMedia.type = 'link';
     } else {
-      mimetype = mime.getType(prepareMedia.fileName);
+      mimetype = mimeTypes.lookup(prepareMedia.fileName);
       const id = await this.getIdMedia(prepareMedia);
       prepareMedia.id = id;
       prepareMedia.type = 'id';
@@ -1274,7 +1273,7 @@ export class BusinessStartupService extends ChannelStartupService {
       }
 
       if (!contact.wuid) {
-        contact.wuid = this.createJid(contact.phoneNumber);
+        contact.wuid = createJid(contact.phoneNumber);
       }
 
       result += `item1.TEL;waid=${contact.wuid}:${contact.phoneNumber}\n` + 'item1.X-ABLabel:Celular\n' + 'END:VCARD';
