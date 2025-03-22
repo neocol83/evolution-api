@@ -156,7 +156,7 @@ export class WebhookController extends EventController implements EventControlle
         }
 
         try {
-          if (isURL(globalURL)) {
+          if (regex.test(globalURL)) {
             const httpService = axios.create({ 
               baseURL: globalURL,
               timeout: webhookConfig.REQUEST?.TIMEOUT_MS ?? 30000,
