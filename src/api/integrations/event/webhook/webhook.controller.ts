@@ -115,7 +115,6 @@ export class WebhookController extends EventController implements EventControlle
             const httpService = axios.create({
               baseURL,
               headers: webhookHeaders as Record<string, string> | undefined,
-              timeout: webhookConfig.REQUEST?.TIMEOUT_MS ?? 30000,
             });
 
             await this.retryWebhookRequest(httpService, webhookData, `${origin}.sendData-Webhook`, baseURL, serverUrl);
@@ -157,10 +156,7 @@ export class WebhookController extends EventController implements EventControlle
 
         try {
           if (regex.test(globalURL)) {
-            const httpService = axios.create({ 
-              baseURL: globalURL,
-              timeout: webhookConfig.REQUEST?.TIMEOUT_MS ?? 30000,
-            });
+            const httpService = axios.create({ baseURL: globalURL });
 
             await this.retryWebhookRequest(
               httpService,
@@ -194,21 +190,12 @@ export class WebhookController extends EventController implements EventControlle
     origin: string,
     baseURL: string,
     serverUrl: string,
-    maxRetries?: number,
-    delaySeconds?: number,
+    maxRetries = 10,
+    delaySeconds = 30,
   ): Promise<void> {
-    // Obter configurações de retry das variáveis de ambiente
-    const webhookConfig = configService.get<Webhook>('WEBHOOK');
-    const maxRetryAttempts = maxRetries ?? webhookConfig.RETRY?.MAX_ATTEMPTS ?? 10;
-    const initialDelay = delaySeconds ?? webhookConfig.RETRY?.INITIAL_DELAY_SECONDS ?? 5;
-    const useExponentialBackoff = webhookConfig.RETRY?.USE_EXPONENTIAL_BACKOFF ?? true;
-    const maxDelay = webhookConfig.RETRY?.MAX_DELAY_SECONDS ?? 300;
-    const jitterFactor = webhookConfig.RETRY?.JITTER_FACTOR ?? 0.2;
-    const nonRetryableStatusCodes = webhookConfig.RETRY?.NON_RETRYABLE_STATUS_CODES ?? [400, 401, 403, 404, 422];
-    
     let attempts = 0;
 
-    while (attempts < maxRetryAttempts) {
+    while (attempts < maxRetries) {
       try {
         await httpService.post('', webhookData);
         if (attempts > 0) {
@@ -222,29 +209,12 @@ export class WebhookController extends EventController implements EventControlle
       } catch (error) {
         attempts++;
 
-        // Verificar se é um erro de timeout
-        const isTimeout = error.code === 'ECONNABORTED';
-
-        // Verificar se o erro não deve gerar retry com base no status code
-        if (error?.response?.status && nonRetryableStatusCodes.includes(error.response.status)) {
-          this.logger.error({
-            local: `${origin}`,
-            message: `Erro não recuperável (${error.response.status}): ${error?.message}. Cancelando retentativas.`,
-            statusCode: error?.response?.status,
-            url: baseURL,
-            server_url: serverUrl,
-          });
-          throw error;
-        }
-
         this.logger.error({
           local: `${origin}`,
-          message: `Tentativa ${attempts}/${maxRetryAttempts} falhou: ${isTimeout ? 'Timeout da requisição' : error?.message}`,
+          message: `Tentativa ${attempts}/${maxRetries} falhou: ${error?.message}`,
           hostName: error?.hostname,
           syscall: error?.syscall,
           code: error?.code,
-          isTimeout,
-          statusCode: error?.response?.status,
           error: error?.errno,
           stack: error?.stack,
           name: error?.name,
@@ -252,28 +222,11 @@ export class WebhookController extends EventController implements EventControlle
           server_url: serverUrl,
         });
 
-        if (attempts === maxRetryAttempts) {
+        if (attempts === maxRetries) {
           throw error;
         }
 
-        // Cálculo do delay com backoff exponencial e jitter
-        let nextDelay = initialDelay;
-        if (useExponentialBackoff) {
-          // Fórmula: initialDelay * (2^attempts) com limite máximo
-          nextDelay = Math.min(initialDelay * Math.pow(2, attempts - 1), maxDelay);
-
-          // Adicionar jitter para evitar "thundering herd"
-          const jitter = nextDelay * jitterFactor * (Math.random() * 2 - 1);
-          nextDelay = Math.max(initialDelay, nextDelay + jitter);
-        }
-
-        this.logger.log({
-          local: `${origin}`,
-          message: `Aguardando ${nextDelay.toFixed(1)} segundos antes da próxima tentativa`,
-          url: baseURL,
-        });
-
-        await new Promise((resolve) => setTimeout(resolve, nextDelay * 1000));
+        await new Promise((resolve) => setTimeout(resolve, delaySeconds * 1000));
       }
     }
   }
