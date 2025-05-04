@@ -693,13 +693,13 @@ export class ChatwootService {
       })) as any;
       this.logger.verbose(`Contact conversations: ${JSON.stringify(contactConversations)}`);
 
-      if (!contactConversations || !contactConversations.payload) {
+      if (!contactConversations || !contactConversations.payload || contactConversations.payload.length === 0) {
         this.logger.error('No conversations found or payload is undefined');
         return null;
       }
 
       let inboxConversation = contactConversations.payload.find(
-        (conversation) => conversation.inbox_id == filterInbox.id,
+        (conversation) => conversation.inbox_id === filterInbox.id,
       );
       if (inboxConversation) {
         if (this.provider.reopenConversation) {
@@ -716,7 +716,7 @@ export class ChatwootService {
           }
         } else {
           inboxConversation = contactConversations.payload.find(
-            (conversation) => conversation.status !== 'resolved' && conversation.inbox_id == filterInbox.id,
+            (conversation) => conversation.status !== 'resolved' && conversation.inbox_id === filterInbox.id,
           );
           this.logger.verbose(`Found conversation: ${JSON.stringify(inboxConversation)}`);
         }
