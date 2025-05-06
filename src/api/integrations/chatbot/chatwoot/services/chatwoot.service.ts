@@ -693,7 +693,7 @@ export class ChatwootService {
       })) as any;
       this.logger.verbose(`Contact conversations: ${JSON.stringify(contactConversations)}`);
 
-      if (!contactConversations || !contactConversations.payload || contactConversations.payload.length === 0) {
+      if (!contactConversations || !contactConversations.payload) {
         this.logger.error('No conversations found or payload is undefined');
         return null;
       }
