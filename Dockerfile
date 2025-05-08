@@ -11,7 +11,7 @@ WORKDIR /evolution
 
 COPY ./package.json ./tsconfig.json ./
 
-RUN npm_config_ignore_scripts=true npm install
+RUN npm install
 
 COPY ./src ./src
 COPY ./public ./public
