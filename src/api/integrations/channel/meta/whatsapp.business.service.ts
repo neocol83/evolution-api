@@ -192,62 +192,62 @@ export class BusinessStartupService extends ChannelStartupService {
   }
 
   private messageTextJson(received: any) {
-    // Verificar que received y received.messages existen
-    if (!received || !received.messages || received.messages.length === 0) {
-      this.logger.error('Error: received object or messages array is undefined or empty');
-      return null;
-    }
-  
-    const message = received.messages[0];
-    let content: any;
-    
-    // Verificar si es un mensaje de tipo sticker, location u otro tipo que no tiene text
-    if (!message.text) {
-      // Si no hay texto, manejamos diferente según el tipo de mensaje
-      if (message.type === 'sticker') {
-        content = { stickerMessage: {} };
-      } else if (message.type === 'location') {
-        content = { locationMessage: {
-          degreesLatitude: message.location?.latitude,
-          degreesLongitude: message.location?.longitude,
-          name: message.location?.name,
-          address: message.location?.address,
-        }};
-      } else {
-        // Para otros tipos de mensajes sin texto, creamos un contenido genérico
-        this.logger.log(`Mensaje de tipo ${message.type} sin campo text`);
-        content = { [message.type + 'Message']: message[message.type] || {} };
-      }
-      
-      // Añadir contexto si existe
-      if (message.context) {
-        content = { ...content, contextInfo: { stanzaId: message.context.id } };
-      }
-      
-      return content;
-    }
-    
-    // Si el mensaje tiene texto, procesamos normalmente
-    if (!received.metadata || !received.metadata.phone_number_id) {
-      this.logger.error('Error: metadata or phone_number_id is undefined');
-      return null;
-    }
+  // Verificar que received y received.messages existen
+  if (!received || !received.messages || received.messages.length === 0) {
+    this.logger.error('Error: received object or messages array is undefined or empty');
+    return null;
+  }
 
-    if (message.from === received.metadata.phone_number_id) {
-      content = {
-        extendedTextMessage: { text: message.text.body },
-      };
-      if (message.context) {
-        content = { ...content, contextInfo: { stanzaId: message.context.id } };
-      }
+  const message = received.messages[0];
+  let content: any;
+
+  // Verificar si es un mensaje de tipo sticker, location u otro tipo que no tiene text
+  if (!message.text) {
+    // Si no hay texto, manejamos diferente según el tipo de mensaje
+    if (message.type === 'sticker') {
+      content = { stickerMessage: {} };
+    } else if (message.type === 'location') {
+      content = { locationMessage: {
+        degreesLatitude: message.location?.latitude,
+        degreesLongitude: message.location?.longitude,
+        name: message.location?.name,
+        address: message.location?.address,
+      }};
     } else {
-      content = { conversation: message.text.body };
-      if (message.context) {
-        content = { ...content, contextInfo: { stanzaId: message.context.id } };
-      }
+      // Para otros tipos de mensajes sin texto, creamos un contenido genérico
+      this.logger.log(`Mensaje de tipo ${message.type} sin campo text`);
+      content = { [message.type + 'Message']: message[message.type] || {} };
+    }
+    
+    // Añadir contexto si existe
+    if (message.context) {
+      content = { ...content, contextInfo: { stanzaId: message.context.id } };
     }
     
     return content;
+  }
+
+  // Si el mensaje tiene texto, procesamos normalmente
+  if (!received.metadata || !received.metadata.phone_number_id) {
+    this.logger.error('Error: metadata or phone_number_id is undefined');
+    return null;
+  }
+
+  if (message.from === received.metadata.phone_number_id) {
+    content = {
+      extendedTextMessage: { text: message.text.body },
+    };
+    if (message.context) {
+      content = { ...content, contextInfo: { stanzaId: message.context.id } };
+    }
+  } else {
+    content = { conversation: message.text.body };
+    if (message.context) {
+      content = { ...content, contextInfo: { stanzaId: message.context.id } };
+    }
+  }
+
+  return content;
   }
 
   private messageContactsJson(received: any) {
@@ -828,6 +828,7 @@ export class BusinessStartupService extends ChannelStartupService {
     try {
       let quoted: any;
       let webhookUrl: any;
+      const linkPreview = options?.linkPreview != false ? undefined : false;
       if (options?.quoted) {
         const m = options?.quoted;
 
@@ -895,7 +896,7 @@ export class BusinessStartupService extends ChannelStartupService {
             to: number.replace(/\D/g, ''),
             text: {
               body: message['conversation'],
-              preview_url: Boolean(options?.linkPreview),
+              preview_url: linkPreview,
             },
           };
           quoted ? (content.context = { message_id: quoted.id }) : content;
@@ -911,8 +912,8 @@ export class BusinessStartupService extends ChannelStartupService {
             to: number.replace(/\D/g, ''),
             [message['mediaType']]: {
               [message['type']]: message['id'],
-              preview_url: Boolean(options?.linkPreview),
-              ...(message['fileName'] && !isImage && !isVideo && { filename: message['fileName'] }),
+              preview_url: linkPreview,
+              ...(message['fileName'] && !isImage && { filename: message['fileName'] }),
               caption: message['caption'],
             },
           };
