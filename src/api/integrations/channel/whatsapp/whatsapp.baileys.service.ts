@@ -134,7 +134,7 @@ import { randomBytes } from 'crypto';
 import EventEmitter2 from 'eventemitter2';
 import ffmpeg from 'fluent-ffmpeg';
 import FormData from 'form-data';
-// import { readFileSync } from 'fs';
+import { readFileSync } from 'fs';
 import Long from 'long';
 import mimeTypes from 'mime-types';
 import NodeCache from 'node-cache';
