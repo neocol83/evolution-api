@@ -828,7 +828,6 @@ export class BusinessStartupService extends ChannelStartupService {
     try {
       let quoted: any;
       let webhookUrl: any;
-      const linkPreview = options?.linkPreview != false ? undefined : false;
       if (options?.quoted) {
         const m = options?.quoted;
 
@@ -896,7 +895,7 @@ export class BusinessStartupService extends ChannelStartupService {
             to: number.replace(/\D/g, ''),
             text: {
               body: message['conversation'],
-              preview_url: linkPreview,
+              preview_url: Boolean(options?.linkPreview),
             },
           };
           quoted ? (content.context = { message_id: quoted.id }) : content;
@@ -912,8 +911,8 @@ export class BusinessStartupService extends ChannelStartupService {
             to: number.replace(/\D/g, ''),
             [message['mediaType']]: {
               [message['type']]: message['id'],
-              preview_url: linkPreview,
-              ...(message['fileName'] && !isImage && { filename: message['fileName'] }),
+              preview_url: Boolean(options?.linkPreview),
+              ...(message['fileName'] && !isImage && !isVideo && { filename: message['fileName'] }),
               caption: message['caption'],
             },
           };

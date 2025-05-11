@@ -699,7 +699,7 @@ export class ChatwootService {
       }
 
       let inboxConversation = contactConversations.payload.find(
-        (conversation) => conversation.inbox_id === filterInbox.id,
+        (conversation) => conversation.inbox_id == filterInbox.id,
       );
       if (inboxConversation) {
         if (this.provider.reopenConversation) {
@@ -716,7 +716,7 @@ export class ChatwootService {
           }
         } else {
           inboxConversation = contactConversations.payload.find(
-            (conversation) => conversation.status !== 'resolved' && conversation.inbox_id === filterInbox.id,
+            (conversation) => conversation.status !== 'resolved' && conversation.inbox_id == filterInbox.id,
           );
           this.logger.verbose(`Found conversation: ${JSON.stringify(inboxConversation)}`);
         }
@@ -1652,7 +1652,7 @@ export class ChatwootService {
       stickerMessage: undefined,
       documentMessage: msg.documentMessage?.caption,
       documentWithCaptionMessage: msg.documentWithCaptionMessage?.message?.documentMessage?.caption,
-      audioMessage: msg.audioMessage?.caption,
+      audioMessage: msg.audioMessage ? (msg.audioMessage.caption ?? '') : undefined,
       contactMessage: msg.contactMessage?.vcard,
       contactsArrayMessage: msg.contactsArrayMessage,
       locationMessage: msg.locationMessage,
