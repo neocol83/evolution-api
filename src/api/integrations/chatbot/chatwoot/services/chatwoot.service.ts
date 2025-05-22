@@ -930,7 +930,7 @@ export class ChatwootService {
     quotedMsg?: MessageModel,
   ) {
     if (sourceId && this.isImportHistoryAvailable()) {
-      const messageAlreadySaved = await chatwootImport.getExistingSourceIds([sourceId]);
+      const messageAlreadySaved = await chatwootImport.getExistingSourceIds([sourceId], conversationId);
       if (messageAlreadySaved) {
         if (messageAlreadySaved.size > 0) {
           this.logger.warn('Message already saved on chatwoot');
@@ -1110,7 +1110,8 @@ export class ChatwootService {
         return messageSent;
       }
 
-      if (type === 'image' && parsedMedia && parsedMedia?.ext === '.gif') {
+      const documentExtensions = ['.gif', '.svg', '.tiff', '.tif'];
+      if (type === 'image' && parsedMedia && documentExtensions.includes(parsedMedia?.ext)) {
         type = 'document';
       }
 
