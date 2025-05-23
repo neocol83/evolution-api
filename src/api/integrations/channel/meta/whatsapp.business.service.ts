@@ -252,27 +252,18 @@ export class BusinessStartupService extends ChannelStartupService {
     return content;
   }
 
-  // Si el mensaje tiene texto, procesamos normalmente
-  if (!received.metadata || !received.metadata.phone_number_id) {
-    this.logger.error('Error: metadata or phone_number_id is undefined');
-    return null;
-  }
-
-  if (message.from === received.metadata.phone_number_id) {
-    content = {
-      extendedTextMessage: { text: message.text.body },
+  private messageLocationJson(received: any) {
+    const message = received.messages[0];
+    let content: any = {
+      locationMessage: {
+        degreesLatitude: message.location.latitude,
+        degreesLongitude: message.location.longitude,
+        name: message.location?.name,
+        address: message.location?.address,
+      },
     };
-    if (message.context) {
-      content = { ...content, contextInfo: { stanzaId: message.context.id } };
-    }
-  } else {
-    content = { conversation: message.text.body };
-    if (message.context) {
-      content = { ...content, contextInfo: { stanzaId: message.context.id } };
-    }
-  }
-
-  return content;
+    message.context ? (content = { ...content, contextInfo: { stanzaId: message.context.id } }) : content;
+    return content;
   }
 
   private messageContactsJson(received: any) {
@@ -332,7 +323,7 @@ export class BusinessStartupService extends ChannelStartupService {
 
   private renderMessageType(type: string) {
     let messageType: string;
-  
+
     switch (type) {
       case 'text':
         messageType = 'conversation';
@@ -362,7 +353,7 @@ export class BusinessStartupService extends ChannelStartupService {
         messageType = 'conversation';
         break;
     }
-  
+
     return messageType;
   }
 
@@ -370,16 +361,18 @@ export class BusinessStartupService extends ChannelStartupService {
     try {
       let messageRaw: any;
       let pushName: any;
-  
+
       if (received.contacts) pushName = received.contacts[0].profile.name;
-  
+
       if (received.messages) {
         const message = received.messages[0]; // Añadir esta línea para definir message
+
         const key = {
           id: message.id,
           remoteJid: this.phoneNumber,
           fromMe: message.from === received.metadata.phone_number_id,
         };
+
         if (message.type === 'sticker') {
           this.logger.log('Procesando mensaje de tipo sticker');
           messageRaw = {
@@ -847,7 +840,6 @@ export class BusinessStartupService extends ChannelStartupService {
     try {
       let quoted: any;
       let webhookUrl: any;
-      const linkPreview = options?.linkPreview != false ? undefined : false;
       if (options?.quoted) {
         const m = options?.quoted;
 
@@ -915,7 +907,7 @@ export class BusinessStartupService extends ChannelStartupService {
             to: number.replace(/\D/g, ''),
             text: {
               body: message['conversation'],
-              preview_url: linkPreview,
+              preview_url: Boolean(options?.linkPreview),
             },
           };
           quoted ? (content.context = { message_id: quoted.id }) : content;
