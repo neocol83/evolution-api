@@ -1561,22 +1561,18 @@ export class ChatwootService {
       return;
     }
 
-    await this.prismaRepository.message.updateMany({
-      where: {
-        key: {
-          path: ['id'],
-          equals: key.id,
-        },
-        instanceId: instance.instanceId,
-      },
-      data: {
-        chatwootMessageId: chatwootMessageIds.messageId,
-        chatwootConversationId: chatwootMessageIds.conversationId,
-        chatwootInboxId: chatwootMessageIds.inboxId,
-        chatwootContactInboxSourceId: chatwootMessageIds.contactInboxSourceId,
-        chatwootIsRead: chatwootMessageIds.isRead,
-      },
-    });
+    // Use raw SQL to avoid JSON path issues
+    await this.prismaRepository.$executeRaw`
+      UPDATE "Message" 
+      SET 
+        "chatwootMessageId" = ${chatwootMessageIds.messageId},
+        "chatwootConversationId" = ${chatwootMessageIds.conversationId},
+        "chatwootInboxId" = ${chatwootMessageIds.inboxId},
+        "chatwootContactInboxSourceId" = ${chatwootMessageIds.contactInboxSourceId},
+        "chatwootIsRead" = ${chatwootMessageIds.isRead || false}
+      WHERE "instanceId" = ${instance.instanceId} 
+      AND "key"->>'id' = ${key.id}
+    `;
 
     if (this.isImportHistoryAvailable()) {
       chatwootImport.updateMessageSourceID(chatwootMessageIds.messageId, key.id);
@@ -1584,17 +1580,15 @@ export class ChatwootService {
   }
 
   private async getMessageByKeyId(instance: InstanceDto, keyId: string): Promise<MessageModel> {
-    const messages = await this.prismaRepository.message.findFirst({
-      where: {
-        key: {
-          path: ['id'],
-          equals: keyId,
-        },
-        instanceId: instance.instanceId,
-      },
-    });
+    // Use raw SQL query to avoid JSON path issues with Prisma
+    const messages = await this.prismaRepository.$queryRaw`
+      SELECT * FROM "Message" 
+      WHERE "instanceId" = ${instance.instanceId} 
+      AND "key"->>'id' = ${keyId}
+      LIMIT 1
+    `;
 
-    return messages || null;
+    return (messages as MessageModel[])[0] || null;
   }
 
   private async getReplyToIds(
