@@ -62,6 +62,7 @@ import { ChannelStartupService } from '@api/services/channel.service';
 import { Events, MessageSubtype, TypeMediaMessage, wa } from '@api/types/wa.types';
 import { CacheEngine } from '@cache/cacheengine';
 import {
+  AudioConverter,
   CacheConf,
   Chatwoot,
   ConfigService,
@@ -1205,6 +1206,8 @@ export class BaileysStartupService extends ChannelStartupService {
             received?.message?.ptvMessage ||
             received?.message?.audioMessage;
 
+          const isVideo = received?.message?.videoMessage;
+
           if (this.localSettings.readMessages && received.key.id !== 'status@broadcast') {
             await this.client.readMessages([received.key]);
           }
@@ -1275,6 +1278,12 @@ export class BaileysStartupService extends ChannelStartupService {
             if (isMedia) {
               if (this.configService.get<S3>('S3').ENABLE) {
                 try {
+                  if (isVideo && !this.configService.get<S3>('S3').SAVE_VIDEO) {
+                    this.logger.warn('Video upload is disabled. Skipping video upload.');
+                    // Skip video upload by returning early from this block
+                    return;
+                  }
+
                   const message: any = received;
 
                   // Verificação adicional para garantir que há conteúdo de mídia real
@@ -2168,6 +2177,8 @@ export class BaileysStartupService extends ChannelStartupService {
         messageSent?.message?.ptvMessage ||
         messageSent?.message?.audioMessage;
 
+      const isVideo = messageSent?.message?.videoMessage;
+
       if (this.configService.get<Chatwoot>('CHATWOOT').ENABLED && this.localChatwoot?.enabled && !isIntegration) {
         this.chatwootService.eventWhatsapp(
           Events.SEND_MESSAGE,
@@ -2192,6 +2203,10 @@ export class BaileysStartupService extends ChannelStartupService {
 
         if (isMedia && this.configService.get<S3>('S3').ENABLE) {
           try {
+            if (isVideo && !this.configService.get<S3>('S3').SAVE_VIDEO) {
+              throw new Error('Video upload is disabled.');
+            }
+
             const message: any = messageRaw;
 
             // Verificação adicional para garantir que há conteúdo de mídia real
@@ -2590,6 +2605,13 @@ export class BaileysStartupService extends ChannelStartupService {
         }
       }
 
+      if (mediaMessage?.fileName) {
+        mimetype = mimeTypes.lookup(mediaMessage.fileName).toString();
+        if (mimetype === 'application/mp4') {
+          mimetype = 'video/mp4';
+        }
+      }
+
       prepareMedia[mediaType].caption = mediaMessage?.caption;
       prepareMedia[mediaType].mimetype = mimetype;
       prepareMedia[mediaType].fileName = mediaMessage.fileName;
@@ -2816,7 +2838,8 @@ export class BaileysStartupService extends ChannelStartupService {
   }
 
   public async processAudio(audio: string): Promise<Buffer> {
-    if (process.env.API_AUDIO_CONVERTER) {
+    const audioConverterConfig = this.configService.get<AudioConverter>('AUDIO_CONVERTER');
+    if (audioConverterConfig.API_URL) {
       this.logger.verbose('Using audio converter API');
       const formData = new FormData();
 
@@ -2826,8 +2849,8 @@ export class BaileysStartupService extends ChannelStartupService {
         formData.append('base64', audio);
       }
 
-      const { data } = await axios.post(process.env.API_AUDIO_CONVERTER, formData, {
-        headers: { ...formData.getHeaders(), apikey: process.env.API_AUDIO_CONVERTER_KEY },
+      const { data } = await axios.post(audioConverterConfig.API_URL, formData, {
+        headers: { ...formData.getHeaders(), apikey: audioConverterConfig.API_KEY },
       });
 
       if (!data.audio) {
@@ -4712,12 +4735,7 @@ export class BaileysStartupService extends ChannelStartupService {
   }
 
   public async fetchMessages(query: Query<Message>) {
-    const keyFilters = query?.where?.key as {
-      id?: string;
-      fromMe?: boolean;
-      remoteJid?: string;
-      participants?: string;
-    };
+    const keyFilters = query?.where?.key as ExtendedIMessageKey;
 
     const timestampFilter = {};
     if (query?.where?.messageTimestamp) {
@@ -4740,7 +4758,13 @@ export class BaileysStartupService extends ChannelStartupService {
           keyFilters?.id ? { key: { path: ['id'], equals: keyFilters?.id } } : {},
           keyFilters?.fromMe ? { key: { path: ['fromMe'], equals: keyFilters?.fromMe } } : {},
           keyFilters?.remoteJid ? { key: { path: ['remoteJid'], equals: keyFilters?.remoteJid } } : {},
-          keyFilters?.participants ? { key: { path: ['participants'], equals: keyFilters?.participants } } : {},
+          keyFilters?.participant ? { key: { path: ['participant'], equals: keyFilters?.participant } } : {},
+          {
+            OR: [
+              keyFilters?.remoteJid ? { key: { path: ['remoteJid'], equals: keyFilters?.remoteJid } } : {},
+              keyFilters?.senderPn ? { key: { path: ['senderPn'], equals: keyFilters?.senderPn } } : {},
+            ],
+          },
         ],
       },
     });
@@ -4764,7 +4788,13 @@ export class BaileysStartupService extends ChannelStartupService {
           keyFilters?.id ? { key: { path: ['id'], equals: keyFilters?.id } } : {},
           keyFilters?.fromMe ? { key: { path: ['fromMe'], equals: keyFilters?.fromMe } } : {},
           keyFilters?.remoteJid ? { key: { path: ['remoteJid'], equals: keyFilters?.remoteJid } } : {},
-          keyFilters?.participants ? { key: { path: ['participants'], equals: keyFilters?.participants } } : {},
+          keyFilters?.participant ? { key: { path: ['participant'], equals: keyFilters?.participant } } : {},
+          {
+            OR: [
+              keyFilters?.remoteJid ? { key: { path: ['remoteJid'], equals: keyFilters?.remoteJid } } : {},
+              keyFilters?.senderPn ? { key: { path: ['senderPn'], equals: keyFilters?.senderPn } } : {},
+            ],
+          },
         ],
       },
       orderBy: { messageTimestamp: 'desc' },
