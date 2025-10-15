@@ -152,7 +152,13 @@ import { v4 } from 'uuid';
 import { BaileysMessageProcessor } from './baileysMessage.processor';
 import { useVoiceCallsBaileys } from './voiceCalls/useVoiceCallsBaileys';
 
+export interface ExtendedMessageKey extends WAMessageKey {
+  senderPn?: string;
+  previousRemoteJid?: string | null;
+}
+
 export interface ExtendedIMessageKey extends proto.IMessageKey {
+  senderPn?: string;
   remoteJidAlt?: string;
   participantAlt?: string;
   server_id?: string;
@@ -998,6 +1004,10 @@ export class BaileysStartupService extends ChannelStartupService {
             continue;
           }
 
+          if (m.key.remoteJid?.includes('@lid') && (m.key as ExtendedIMessageKey).senderPn) {
+            m.key.remoteJid = (m.key as ExtendedIMessageKey).senderPn;
+          }
+
           if (Long.isLong(m?.messageTimestamp)) {
             m.messageTimestamp = m.messageTimestamp?.toNumber();
           }
@@ -1059,7 +1069,16 @@ export class BaileysStartupService extends ChannelStartupService {
       settings: any,
     ) => {
       try {
+        // Garantir que localChatwoot está carregado antes de processar mensagens
+        if (this.configService.get<Chatwoot>('CHATWOOT').ENABLED && !this.localChatwoot?.enabled) {
+          await this.loadChatwoot();
+        }
+
         for (const received of messages) {
+          if (received.key.remoteJid?.includes('@lid') && (received.key as ExtendedMessageKey).senderPn) {
+            (received.key as ExtendedMessageKey).previousRemoteJid = received.key.remoteJid;
+            received.key.remoteJid = (received.key as ExtendedMessageKey).senderPn;
+          }
           if (
             received?.messageStubParameters?.some?.((param) =>
               [
@@ -1107,9 +1126,9 @@ export class BaileysStartupService extends ChannelStartupService {
             await this.sendDataWebhook(Events.MESSAGES_EDITED, editedMessage);
             const oldMessage = await this.getMessage(editedMessage.key, true);
             if ((oldMessage as any)?.id) {
-              const editedMessageTimestamp = Long.isLong(received?.messageTimestamp)
-                ? Math.floor(received?.messageTimestamp.toNumber())
-                : Math.floor(received?.messageTimestamp as number);
+              const editedMessageTimestamp = Long.isLong(editedMessage?.timestampMs)
+                ? Math.floor(editedMessage.timestampMs.toNumber() / 1000)
+                : Math.floor((editedMessage.timestampMs as number) / 1000);
 
               await this.prismaRepository.message.update({
                 where: { id: (oldMessage as any).id },
@@ -1348,6 +1367,10 @@ export class BaileysStartupService extends ChannelStartupService {
             }
           }
 
+          if (messageRaw.key.remoteJid?.includes('@lid') && messageRaw.key.remoteJidAlt) {
+            messageRaw.key.remoteJid = messageRaw.key.remoteJidAlt;
+          }
+
           this.logger.log(messageRaw);
 
           this.sendDataWebhook(Events.MESSAGES_UPSERT, messageRaw);
@@ -1423,18 +1446,25 @@ export class BaileysStartupService extends ChannelStartupService {
           continue;
         }
 
-        if (update.message !== null && update.status === undefined) continue;
+        if (key.remoteJid?.includes('@lid') && key.remoteJidAlt) {
+          key.remoteJid = key.remoteJidAlt;
+        }
 
         const updateKey = `${this.instance.id}_${key.id}_${update.status}`;
 
         const cached = await this.baileysCache.get(updateKey);
 
-        if (cached) {
+        // Não ignorar mensagens deletadas (messageStubType === 1) mesmo que estejam em cache
+        const isDeletedMessage = update.messageStubType === 1;
+
+        if (cached && !isDeletedMessage) {
           this.logger.info(`Message duplicated ignored [avoid deadlock]: ${updateKey}`);
           continue;
         }
 
-        await this.baileysCache.set(updateKey, true, 30 * 60);
+        if (!isDeletedMessage) {
+          await this.baileysCache.set(updateKey, true, this.UPDATE_CACHE_TTL_SECONDS);
+        }
 
         if (status[update.status] === 'READ' && key.fromMe) {
           if (this.configService.get<Chatwoot>('CHATWOOT').ENABLED && this.localChatwoot?.enabled) {
@@ -1464,7 +1494,7 @@ export class BaileysStartupService extends ChannelStartupService {
             keyId: key.id,
             remoteJid: key?.remoteJid,
             fromMe: key.fromMe,
-            participant: key?.participant,
+            participant: key?.remoteJid,
             status: status[update.status] ?? 'DELETED',
             pollUpdates,
             instanceId: this.instanceId,
@@ -1538,8 +1568,22 @@ export class BaileysStartupService extends ChannelStartupService {
 
           this.sendDataWebhook(Events.MESSAGES_UPDATE, message);
 
-          if (this.configService.get<Database>('DATABASE').SAVE_DATA.MESSAGE_UPDATE)
-            await this.prismaRepository.messageUpdate.create({ data: message });
+          if (this.configService.get<Database>('DATABASE').SAVE_DATA.MESSAGE_UPDATE) {
+            // Verificar se a mensagem ainda existe antes de criar o update
+            const messageExists = await this.prismaRepository.message.findFirst({
+              where: {
+                instanceId: message.instanceId,
+                key: {
+                  path: ['id'],
+                  equals: message.keyId,
+                },
+              },
+            });
+
+            if (messageExists) {
+              await this.prismaRepository.messageUpdate.create({ data: message });
+            }
+          }
 
           const existingChat = await this.prismaRepository.chat.findFirst({
             where: { instanceId: this.instanceId, remoteJid: message.remoteJid },
@@ -3409,13 +3453,18 @@ export class BaileysStartupService extends ChannelStartupService {
           }
 
           const numberJid = numberVerified?.jid || user.jid;
-
+          // const lid =
+          //   typeof numberVerified?.lid === 'string'
+          //     ? numberVerified.lid
+          //     : numberJid.includes('@lid')
+          //       ? numberJid.split('@')[1]
+          //       : undefined;
           return new OnWhatsAppDto(
             numberJid,
             !!numberVerified?.exists,
             user.number,
             contacts.find((c) => c.remoteJid === numberJid)?.pushName,
-            undefined,
+            // lid,
           );
         }),
       );
@@ -3567,7 +3616,7 @@ export class BaileysStartupService extends ChannelStartupService {
                 keyId: messageId,
                 remoteJid: response.key.remoteJid,
                 fromMe: response.key.fromMe,
-                participant: response.key?.participant,
+                participant: response.key?.remoteJid,
                 status: 'DELETED',
                 instanceId: this.instanceId,
               };
@@ -3627,10 +3676,7 @@ export class BaileysStartupService extends ChannelStartupService {
         }
       }
 
-      if (
-        Object.keys(msg.message).length === 1 &&
-        Object.prototype.hasOwnProperty.call(msg.message, 'messageContextInfo')
-      ) {
+      if ('messageContextInfo' in msg.message && Object.keys(msg.message).length === 1) {
         throw 'The message is messageContextInfo';
       }
 
@@ -4005,7 +4051,7 @@ export class BaileysStartupService extends ChannelStartupService {
                 keyId: messageId,
                 remoteJid: messageSent.key.remoteJid,
                 fromMe: messageSent.key.fromMe,
-                participant: messageSent.key?.participant,
+                participant: messageSent.key?.remoteJid,
                 status: 'EDITED',
                 instanceId: this.instanceId,
               };
@@ -4601,7 +4647,9 @@ export class BaileysStartupService extends ChannelStartupService {
     return response;
   }
 
-  public async baileysAssertSessions(jids: string[]) {
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  public async baileysAssertSessions(jids: string[], _force?: boolean) {
+    // Note: _force parameter kept for API compatibility but not used in Baileys 7.0.0-rc.5+
     const response = await this.client.assertSessions(jids);
 
     return response;
@@ -4806,7 +4854,7 @@ export class BaileysStartupService extends ChannelStartupService {
           {
             OR: [
               keyFilters?.remoteJid ? { key: { path: ['remoteJid'], equals: keyFilters?.remoteJid } } : {},
-              keyFilters?.remoteJidAlt ? { key: { path: ['remoteJidAlt'], equals: keyFilters?.remoteJidAlt } } : {},
+              keyFilters?.senderPn ? { key: { path: ['senderPn'], equals: keyFilters?.senderPn } } : {},
             ],
           },
         ],
@@ -4836,7 +4884,7 @@ export class BaileysStartupService extends ChannelStartupService {
           {
             OR: [
               keyFilters?.remoteJid ? { key: { path: ['remoteJid'], equals: keyFilters?.remoteJid } } : {},
-              keyFilters?.remoteJidAlt ? { key: { path: ['remoteJidAlt'], equals: keyFilters?.remoteJidAlt } } : {},
+              keyFilters?.senderPn ? { key: { path: ['senderPn'], equals: keyFilters?.senderPn } } : {},
             ],
           },
         ],
